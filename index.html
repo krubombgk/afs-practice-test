@@ -219,6 +219,10 @@
   .toast.show{opacity:1}
   @media (prefers-reduced-motion: reduce){*{transition:none!important}}
   :focus-visible{outline:3px solid #f0c419;outline-offset:2px}
+  .resume-banner{max-width:760px;margin:18px auto 0;background:#fff8e1;border:1px solid #e8d27a;border-radius:10px;padding:16px 20px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  .resume-banner b{display:block;font-size:15px;margin-bottom:2px}
+  .resume-banner p{margin:0;font-size:13px;color:var(--muted)}
+  .resume-banner .btns{display:flex;gap:8px;margin-left:auto}
 </style>
 
 <header class="bar">
@@ -232,6 +236,16 @@
 
 <!-- ============ START SCREEN ============ -->
 <main class="wrap" id="start">
+  <div class="resume-banner" id="resumeBanner" style="display:none">
+    <div>
+      <b>You have an unfinished test</b>
+      <p id="resumeDetail"></p>
+    </div>
+    <div class="btns">
+      <button class="btn btn-ghost" id="resumeDiscard">Start fresh instead</button>
+      <button class="btn btn-primary" id="resumeContinue">Continue where I left off</button>
+    </div>
+  </div>
   <!-- ---- STAGE A: choose a set ---- -->
   <section class="hero" id="pickerStage">
     <div class="eyebrow">Mock papers · 100 items each</div>
@@ -1184,6 +1198,57 @@ const $=s=>document.querySelector(s);
 const startScreen=$("#start"), testScreen=$("#testScreen"), resultScreen=$("#resultScreen");
 const pickerStage=$("#pickerStage"), rulesStage=$("#rulesStage");
 
+/* ---- progress autosave (localStorage) — survives refresh / accidental close ---- */
+const SAVE_KEY="afs_progress_v1";
+function saveProgress(){
+  if(submitted || !CURRENT_SET) return;
+  try{
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      v:1, set:CURRENT_SET, answers, cur, remaining,
+      name:($("#stuName").value||""), cls:($("#stuClass").value||""), no:($("#stuNo").value||""),
+      savedAt:Date.now()
+    }));
+  }catch(e){ /* storage full or blocked — fail silently, test still works without resume */ }
+}
+function loadSavedProgress(){
+  try{
+    const raw=localStorage.getItem(SAVE_KEY);
+    if(!raw) return null;
+    const data=JSON.parse(raw);
+    if(!data || data.v!==1 || !data.set || !TEST_SETS[data.set] || !Array.isArray(data.answers)) return null;
+    return data;
+  }catch(e){ return null; }
+}
+function clearSavedProgress(){
+  try{ localStorage.removeItem(SAVE_KEY); }catch(e){}
+}
+function mmssShort(sec){ const m=Math.floor(sec/60), s=sec%60; return `${m}m ${s}s`; }
+function checkForResume(){
+  const data=loadSavedProgress();
+  if(!data) return;
+  const answered=data.answers.filter(a=>a!==null).length;
+  const ago=Math.round((Date.now()-data.savedAt)/60000);
+  const agoTxt = ago<1 ? "just now" : ago===1 ? "1 minute ago" : `${ago} minutes ago`;
+  $("#resumeDetail").textContent=
+    `${TEST_SETS[data.set].title} · ${answered}/${data.answers.length} answered · `+
+    `${mmssShort(data.remaining)} remaining · saved ${agoTxt}`;
+  $("#resumeBanner").style.display="flex";
+  $("#resumeContinue").onclick=()=>{
+    loadSet(data.set);
+    answers=data.answers.slice(0,TOTAL); while(answers.length<TOTAL) answers.push(null);
+    cur=Math.min(data.cur||0, TOTAL-1);
+    remaining=data.remaining>0?data.remaining:0;
+    pickerStage.style.display="none"; rulesStage.style.display="none";
+    $("#stuName").value=data.name||""; $("#stuClass").value=data.cls||""; $("#stuNo").value=data.no||"";
+    $("#resumeBanner").style.display="none";
+    startTest(true);
+  };
+  $("#resumeDiscard").onclick=()=>{
+    clearSavedProgress();
+    $("#resumeBanner").style.display="none";
+  };
+}
+
 /* ---- build the flat question list for whichever set is chosen ---- */
 function loadSet(key){
   CURRENT_SET=key;
@@ -1256,7 +1321,7 @@ function render(){
     const cp=$(`button[data-copy="${f.bi}"]`);
     cp&&cp.addEventListener("click",()=>{ navigator.clipboard.writeText(b.prompt).then(()=>toast("Image prompt copied — paste it into GPT / DALL·E")); });
   }
-  $("#opts").querySelectorAll(".opt").forEach(el=>el.addEventListener("click",()=>{ answers[cur]=+el.dataset.opt; render(); paint(); }));
+  $("#opts").querySelectorAll(".opt").forEach(el=>el.addEventListener("click",()=>{ answers[cur]=+el.dataset.opt; render(); paint(); saveProgress(); }));
   $("#prevBtn").disabled=cur===0; $("#nextBtn").disabled=cur===TOTAL-1;
   paint();
 }
@@ -1264,7 +1329,7 @@ function render(){
 /* ---- palette ---- */
 function buildGrid(){
   $("#grid").innerHTML=FLAT.map((_,i)=>`<button class="cell" data-go="${i}">${i+1}</button>`).join("");
-  $("#grid").querySelectorAll(".cell").forEach(c=>c.addEventListener("click",()=>{cur=+c.dataset.go;render();}));
+  $("#grid").querySelectorAll(".cell").forEach(c=>c.addEventListener("click",()=>{cur=+c.dataset.go;render();saveProgress();}));
 }
 function paint(){
   const done=answers.filter(a=>a!==null).length;
@@ -1280,6 +1345,7 @@ function tick(){
   remaining--;
   if(remaining<=0){ remaining=0; clock(); finish(); return; }
   clock();
+  if(remaining%10===0) saveProgress();
 }
 function clock(){
   const h=String(Math.floor(remaining/3600)).padStart(2,"0");
@@ -1289,10 +1355,11 @@ function clock(){
 }
 
 /* ---- flow ---- */
-function startTest(){
+function startTest(resuming){
   startScreen.style.display="none"; testScreen.style.display="grid"; resultScreen.style.display="none";
   $("#timer").style.display="block"; buildGrid(); render(); clock();
   timerId=setInterval(tick,1000); window.scrollTo(0,0);
+  if(!resuming) saveProgress();
 }
 function finish(){
   if(submitted) return; submitted=true; clearInterval(timerId); $("#timer").style.display="none";
@@ -1328,6 +1395,7 @@ function finish(){
       ${stim}<div class="qstem">${f.stem}</div><div class="opts">${opts}</div></div>`;
   }).join("");
   submitResultToFirebase();
+  clearSavedProgress();
   window.scrollTo(0,0);
 }
 function submitResultToFirebase(){
@@ -1363,8 +1431,8 @@ $("#startBtn").addEventListener("click",()=>{
   if(!name){ alert("Please enter your name before starting — your teacher needs this to identify your result."); $("#stuName").focus(); return; }
   startTest();
 });
-$("#prevBtn").addEventListener("click",()=>{if(cur>0){cur--;render();}});
-$("#nextBtn").addEventListener("click",()=>{if(cur<TOTAL-1){cur++;render();}});
+$("#prevBtn").addEventListener("click",()=>{if(cur>0){cur--;render();saveProgress();}});
+$("#nextBtn").addEventListener("click",()=>{if(cur<TOTAL-1){cur++;render();saveProgress();}});
 $("#submitBtn").addEventListener("click",()=>{
   const left=answers.filter(a=>a===null).length;
   const msg=left? `You still have ${left} unanswered question(s). Submit anyway?` : `Submit your test and see your results?`;
@@ -1415,8 +1483,16 @@ $("#copyBtn").addEventListener("click",()=>{
 document.addEventListener("keydown",e=>{
   if(testScreen.style.display!=="grid") return;
   if(e.target.matches("input")) return;
-  if(["1","2","3","4"].includes(e.key)){ answers[cur]=+e.key-1; render(); }
-  else if(e.key==="ArrowRight"&&cur<TOTAL-1){cur++;render();}
-  else if(e.key==="ArrowLeft"&&cur>0){cur--;render();}
+  if(["1","2","3","4"].includes(e.key)){ answers[cur]=+e.key-1; render(); saveProgress(); }
+  else if(e.key==="ArrowRight"&&cur<TOTAL-1){cur++;render();saveProgress();}
+  else if(e.key==="ArrowLeft"&&cur>0){cur--;render();saveProgress();}
 });
+
+/* ---- last-chance save right before the tab closes/refreshes mid-test ---- */
+window.addEventListener("beforeunload",()=>{
+  if(testScreen.style.display==="grid") saveProgress();
+});
+
+/* ---- on page load: offer to resume an unfinished attempt ---- */
+checkForResume();
 </script>
